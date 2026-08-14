@@ -77,6 +77,25 @@ class Sweep:
         }
         return sorted(v for v in seen if v)
 
+    def quantizations(self) -> list[str]:
+        seen = {r["config"]["model"]["quantization"] for r in self.results}
+        return sorted(q for q in seen if q)
+
+    @property
+    def purpose(self) -> str:
+        """What this sweep varies, which decides what it can answer.
+
+        Comparisons are only ever drawn *within* one sweep. Absolute
+        throughput drifts between runs on a thermally throttled laptop, so
+        pooling two runs to compare a build against a build would attribute
+        cooling to KleidiAI.
+        """
+        if len(self.variants()) > 1:
+            return "runtimes"
+        if len(self.quantizations()) > 1:
+            return "models"
+        return "single"
+
     def at(
         self, *, quant: str, threads: int, variant: str, metric: str
     ) -> tuple[float, float] | None:
@@ -272,9 +291,11 @@ def _pct(new: float, old: float) -> str:
     return f"{change:+.1f}%" if abs(change) < 10 else f"{change:+.0f}%"
 
 
-def build(sweeps: dict[str, Sweep]) -> str:
-    m4 = sweeps.get("m4")
-    neo = sweeps.get("neoverse")
+def build(sweeps: dict[tuple[str, str], Sweep]) -> str:
+    m4 = sweeps.get(("m4", "models"))
+    neo = sweeps.get(("neoverse", "models")) or sweeps.get(("neoverse", "runtimes"))
+    m4_rt = sweeps.get(("m4", "runtimes"))
+    neo_rt = sweeps.get(("neoverse", "runtimes"))
     if not m4 or not neo:
         raise SystemExit("need both an M4 and a Neoverse sweep to build this page")
 
@@ -430,55 +451,84 @@ def build(sweeps: dict[str, Sweep]) -> str:
     add("")
 
     # -- finding 3 --------------------------------------------------------
-    kleidi_rows = []
-    for sweep in (m4, neo):
-        if "kleidiai" not in sweep.variants() or "cpu" not in sweep.variants():
-            continue
-        threads = max(
-            sweep.series("prefill_tps", quant="Q4_0"), key=lambda p: p[1]
-        )[0]
-        base = sweep.at(
-            quant="Q4_0", threads=threads, variant="cpu", metric="prefill_tps"
-        )
-        kle = sweep.at(
-            quant="Q4_0", threads=threads, variant="kleidiai", metric="prefill_tps"
-        )
-        if base and kle:
-            has_sme = "sme2" in sweep.cpu["features"]
-            kleidi_rows.append(
-                f"| {sweep.cpu['model']} | {'yes' if has_sme else 'no'} | "
-                f"{base[0]:.1f} ± {base[1]:.1f} | {kle[0]:.1f} ± {kle[1]:.1f} "
-                f"| **{_pct(kle[0], base[0])}** |"
-            )
-
-    if kleidi_rows:
-        add("## Finding 3 — KleidiAI's gain tracks SME2")
-        add("")
-        add("Prefill, Q4_0, at each machine's best thread count.")
-        add("")
-        add("| Machine | Has SME2 | Stock ggml | KleidiAI | Change |")
-        add("| --- | --- | ---: | ---: | ---: |")
-        lines.extend(kleidi_rows)
+    kleidi_sweeps = [s for s in (m4_rt, neo_rt) if s is not None]
+    if kleidi_sweeps:
+        add("## Finding 3 — KleidiAI needs SME2, and only helps when compute-bound")
         add("")
         add(
-            "Arm's KleidiAI micro-kernels reach SME2 where the silicon provides "
-            "it. On the Neoverse-N2, which has no SME, enabling them changes "
-            "nothing measurable."
+            "Arm's KleidiAI micro-kernels are the only path to SME2 in llama.cpp. "
+            "Comparing a KleidiAI build against the stock ggml kernels, prefill, "
+            "Q4_0, at each thread count — always within a single sweep, never "
+            "across two."
         )
-        if len(kleidi_rows) > 1:
-            add("")
+        add("")
+
+        for sweep in kleidi_sweeps:
+            has_sme = "sme2" in sweep.cpu["features"]
             add(
-                "Two machines differing in one feature, with the effect appearing "
-                "and disappearing alongside it. The CI machine's variance is the "
-                "tighter of the two, which makes the negative result the more "
-                "solid half of the comparison."
+                f"**{sweep.cpu['model']}** — SME2 "
+                f"{'present' if has_sme else 'absent'}"
             )
+            add("")
+            add("| Threads | Stock ggml | KleidiAI | Change |")
+            add("| ---: | ---: | ---: | ---: |")
+            deltas: list[tuple[int, float, float]] = []
+            for threads, _, _ in sweep.series("prefill_tps", quant="Q4_0", variant="cpu"):
+                base = sweep.at(
+                    quant="Q4_0", threads=threads, variant="cpu", metric="prefill_tps"
+                )
+                kle = sweep.at(
+                    quant="Q4_0",
+                    threads=threads,
+                    variant="kleidiai",
+                    metric="prefill_tps",
+                )
+                if not base or not kle:
+                    continue
+                add(
+                    f"| {threads} | {base[0]:.1f} ± {base[1]:.1f} "
+                    f"| {kle[0]:.1f} ± {kle[1]:.1f} | **{_pct(kle[0], base[0])}** |"
+                )
+                deltas.append((threads, (kle[0] - base[0]) / base[0] * 100, 0.0))
+            add("")
+
+            if has_sme and len(deltas) > 2:
+                chart = _write_chart(
+                    "kleidiai-gain.svg",
+                    _line_chart(
+                        f"{sweep.cpu['model']} — KleidiAI prefill gain vs threads",
+                        {"gain %": deltas},
+                        {"gain %": "#10b981"},
+                        y_label="% faster",
+                        width=460,
+                        height=280,
+                    ),
+                )
+                if chart:
+                    add(f'<img src="{chart}" alt="KleidiAI gain vs threads" width="460">')
+                    add("")
+
+        add(
+            "On the machine without SME the difference is negligible at every "
+            "thread count — enabling KleidiAI changes nothing it can act on."
+        )
+        add("")
+        add(
+            "On the machine with SME2 the gain is real but **decays as threads "
+            "are added**, from a large single-threaded advantage down to nothing "
+            "once every core is busy. That shape is the informative part. SME2 "
+            "is a per-core matrix engine, so it raises the ceiling on how much "
+            "arithmetic one core can do; when enough cores are running that the "
+            "workload is bound by memory bandwidth instead, more arithmetic "
+            "throughput buys nothing. The feature helps precisely where the "
+            "bottleneck is compute."
+        )
         add("")
         add(
             "Detecting `FEAT_SME2` proves the CPU *can* do this. It does not "
-            "prove a runtime *did*. ArmForge keeps those claims separate and "
-            "records the ggml feature line from each build alongside every "
-            "result."
+            "prove a runtime *did*, nor that it will help at your thread count. "
+            "ArmForge keeps those claims separate and records the ggml feature "
+            "line from each build alongside every result."
         )
         add("")
 
@@ -499,9 +549,47 @@ def build(sweeps: dict[str, Sweep]) -> str:
     add(
         "Q4_0 is the smaller file but the larger process, on both machines. The "
         "repacked weight buffer that buys the prefill speed has to live "
-        "somewhere. On a memory-constrained target that can invert the choice, "
-        "and it is the kind of trade-off a throughput-only benchmark never "
-        "surfaces."
+        "somewhere."
+    )
+    add("")
+
+    if m4_rt:
+        rows = []
+        for variant in ("cpu", "kleidiai"):
+            peaks = [
+                r["metrics"]["peak_memory_bytes"]
+                for r in m4_rt.results
+                if r["config"]["runtime"]["build_flags"].get("variant") == variant
+                and r["metrics"].get("peak_memory_bytes")
+            ]
+            if peaks:
+                rows.append((variant, min(peaks)))
+        if len(rows) == 2:
+            base_name, base_peak = rows[0]
+            kle_name, kle_peak = rows[1]
+            add(f"The same is true of KleidiAI on the {m4_rt.cpu['model']}:")
+            add("")
+            add("| Build | Peak resident |")
+            add("| --- | ---: |")
+            add(f"| stock ggml | {base_peak / 1024**2:.0f} MiB |")
+            add(
+                f"| KleidiAI | {kle_peak / 1024**2:.0f} MiB "
+                f"(**{_pct(kle_peak, base_peak)}**) |"
+            )
+            add("")
+            add(
+                "KleidiAI keeps weights in its own SME2-friendly layout, on top "
+                "of everything the baseline already allocates. So the "
+                "single-threaded prefill gain above is not free — it is paid for "
+                "in resident memory, and on a device where that is the binding "
+                "constraint the trade may not be worth taking."
+            )
+            add("")
+
+    add(
+        "None of this is visible in a throughput-only benchmark, which is why "
+        "ArmForge records peak resident memory for every candidate and puts it "
+        "on the Pareto frontier alongside speed."
     )
     add("")
 
@@ -559,24 +647,33 @@ def main() -> int:
         print("no results/ directory", file=sys.stderr)
         return 1
 
-    sweeps: dict[str, Sweep] = {}
+    # Sweeps are indexed by (machine, what-it-varies) so each finding is drawn
+    # from one internally consistent run.
+    sweeps: dict[tuple[str, str], Sweep] = {}
     for path in sorted(RESULTS_DIR.glob("*.json")):
         raw = json.loads(path.read_text())
         if "results" not in raw or "host" not in raw:
             continue
         model = raw["host"]["cpu"]["model"].lower()
-        # Prefer the widest sweep available for each machine.
-        key = "m4" if "apple" in model else "neoverse" if "neoverse" in model else None
-        if key is None:
+        machine = (
+            "m4" if "apple" in model else "neoverse" if "neoverse" in model else None
+        )
+        if machine is None:
             continue
+
+        sweep = Sweep(name=path.stem, path=path, raw=raw)
+        if sweep.purpose == "single":
+            continue
+        key = (machine, sweep.purpose)
         existing = sweeps.get(key)
-        if existing is None or len(raw["results"]) > len(existing.raw["results"]):
-            sweeps[key] = Sweep(name=path.stem, path=path, raw=raw)
+        if existing is None or len(sweep.results) > len(existing.results):
+            sweeps[key] = sweep
 
     page = build(sweeps)
     DOCS_DIR.mkdir(exist_ok=True)
     (DOCS_DIR / "RESULTS.md").write_text(page)
-    print(f"wrote docs/RESULTS.md from {', '.join(s.name for s in sweeps.values())}")
+    used = ", ".join(f"{k[0]}/{k[1]}={v.name}" for k, v in sorted(sweeps.items()))
+    print(f"wrote docs/RESULTS.md from {used}")
     return 0
 
 

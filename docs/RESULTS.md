@@ -45,17 +45,36 @@ llama.cpp repacks Q4_0 weights at load time into a blocked layout that feeds the
 
 This is a prompt-processing result and should not be read as "Q4_0 is better". On the M4 at 6 and 10 threads, Q4_K_M actually **decodes faster**. That is why the recommendation is made per phase.
 
-## Finding 3 — KleidiAI's gain tracks SME2
+## Finding 3 — KleidiAI needs SME2, and only helps when compute-bound
 
-Prefill, Q4_0, at each machine's best thread count.
+Arm's KleidiAI micro-kernels are the only path to SME2 in llama.cpp. Comparing a KleidiAI build against the stock ggml kernels, prefill, Q4_0, at each thread count — always within a single sweep, never across two.
 
-| Machine | Has SME2 | Stock ggml | KleidiAI | Change |
-| --- | --- | ---: | ---: | ---: |
-| Arm Neoverse-N2 | no | 149.8 ± 0.1 | 150.4 ± 0.1 | **+0.4%** |
+**Apple M4** — SME2 present
 
-Arm's KleidiAI micro-kernels reach SME2 where the silicon provides it. On the Neoverse-N2, which has no SME, enabling them changes nothing measurable.
+| Threads | Stock ggml | KleidiAI | Change |
+| ---: | ---: | ---: | ---: |
+| 1 | 134.8 ± 1.8 | 223.1 ± 2.4 | **+66%** |
+| 2 | 262.6 ± 9.2 | 332.1 ± 15.1 | **+26%** |
+| 4 | 321.3 ± 18.5 | 373.2 ± 7.8 | **+16%** |
+| 6 | 368.9 ± 32.0 | 405.0 ± 22.1 | **+9.8%** |
+| 8 | 324.1 ± 33.4 | 331.7 ± 12.7 | **+2.3%** |
+| 10 | 156.6 ± 25.9 | 153.2 ± 4.0 | **-2.2%** |
 
-Detecting `FEAT_SME2` proves the CPU *can* do this. It does not prove a runtime *did*. ArmForge keeps those claims separate and records the ggml feature line from each build alongside every result.
+<img src="charts/kleidiai-gain.svg" alt="KleidiAI gain vs threads" width="460">
+
+**Arm Neoverse-N2** — SME2 absent
+
+| Threads | Stock ggml | KleidiAI | Change |
+| ---: | ---: | ---: | ---: |
+| 1 | 38.1 ± 0.0 | 38.2 ± 0.0 | **+0.3%** |
+| 2 | 75.5 ± 0.0 | 75.7 ± 0.0 | **+0.3%** |
+| 4 | 149.8 ± 0.1 | 150.4 ± 0.1 | **+0.4%** |
+
+On the machine without SME the difference is negligible at every thread count — enabling KleidiAI changes nothing it can act on.
+
+On the machine with SME2 the gain is real but **decays as threads are added**, from a large single-threaded advantage down to nothing once every core is busy. That shape is the informative part. SME2 is a per-core matrix engine, so it raises the ceiling on how much arithmetic one core can do; when enough cores are running that the workload is bound by memory bandwidth instead, more arithmetic throughput buys nothing. The feature helps precisely where the bottleneck is compute.
+
+Detecting `FEAT_SME2` proves the CPU *can* do this. It does not prove a runtime *did*, nor that it will help at your thread count. ArmForge keeps those claims separate and records the ggml feature line from each build alongside every result.
 
 ## Finding 4 — the speed is bought with memory
 
@@ -66,7 +85,18 @@ Detecting `FEAT_SME2` proves the CPU *can* do this. It does not prove a runtime 
 | Arm Neoverse-N2 | Q4_0 | 409 MiB | 795 MiB |
 | Arm Neoverse-N2 | Q4_K_M | 469 MiB | 739 MiB |
 
-Q4_0 is the smaller file but the larger process, on both machines. The repacked weight buffer that buys the prefill speed has to live somewhere. On a memory-constrained target that can invert the choice, and it is the kind of trade-off a throughput-only benchmark never surfaces.
+Q4_0 is the smaller file but the larger process, on both machines. The repacked weight buffer that buys the prefill speed has to live somewhere.
+
+The same is true of KleidiAI on the Apple M4:
+
+| Build | Peak resident |
+| --- | ---: |
+| stock ggml | 777 MiB |
+| KleidiAI | 1242 MiB (**+60%**) |
+
+KleidiAI keeps weights in its own SME2-friendly layout, on top of everything the baseline already allocates. So the single-threaded prefill gain above is not free — it is paid for in resident memory, and on a device where that is the binding constraint the trade may not be worth taking.
+
+None of this is visible in a throughput-only benchmark, which is why ArmForge records peak resident memory for every candidate and puts it on the Pareto frontier alongside speed.
 
 ## What these numbers are not
 
