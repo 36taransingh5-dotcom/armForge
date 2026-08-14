@@ -677,6 +677,80 @@ def _render_recommendation(rec) -> None:
 
 
 @app.command()
+def export(
+    results: str = typer.Argument(..., help="A benchmark.json written by optimize."),
+    output: str = typer.Option(
+        "./armforge-export", "--output", "-o", help="Directory to write into."
+    ),
+    objective: str = typer.Option(
+        "best-balance", "--objective", help="Re-score under a different objective."
+    ),
+) -> None:
+    """Rebuild a deployment package from a saved sweep, without re-benchmarking.
+
+    The recommendation is recomputed from the stored measurements rather than
+    replayed, so a saved artifact re-scored by a newer ArmForge gets the newer
+    reasoning. The measurements themselves are never recomputed -- they are
+    what was observed, and nothing here can change that.
+    """
+    from .bench.deserialize import DeserializationError, sweep_report
+    from .optimize import Objective, recommend
+    from .report import export_package
+
+    try:
+        goal = Objective(objective)
+    except ValueError as exc:
+        options = ", ".join(o.value for o in Objective)
+        console.print(f"[red]error:[/red] unknown objective {objective!r} ({options})")
+        raise typer.Exit(code=1) from exc
+
+    path = Path(results)
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        console.print(f"[red]error:[/red] could not read {path}: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        report = sweep_report(payload)
+    except DeserializationError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    rec = recommend(report.results, report.host, goal)
+    if rec is None:
+        console.print(
+            "[yellow]No successful measurements in this file; nothing to recommend.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    written = export_package(report, rec, Path(output))
+
+    console.print()
+    console.print("[bold]ArmForge[/bold] [dim]·[/dim] Export")
+    console.print()
+    console.print(
+        f"  [dim]from[/dim] {path.name} [dim]·[/dim] "
+        f"{len(report.succeeded)} measurements [dim]·[/dim] "
+        f"{report.host.cpu.model}"
+    )
+    console.print()
+    _render_recommendation(rec)
+    for file in written:
+        console.print(f"  [dim]·[/dim] {file}")
+    console.print()
+
+    stored = payload.get("recommendation")
+    if stored and stored.get("deployment_command") != rec.deployment_command:
+        console.print(
+            "  [yellow]note:[/yellow] this differs from the recommendation stored "
+            "in the file.\n  The measurements are unchanged; the scoring logic "
+            "has moved on since it was written."
+        )
+        console.print()
+
+
+@app.command()
 def version() -> None:
     """Print the ArmForge version."""
     console.print(f"armforge {__version__}")

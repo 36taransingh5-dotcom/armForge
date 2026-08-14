@@ -121,12 +121,42 @@ armforge optimize model.gguf --workload long-context
 # See a measurement plan without running it
 armforge optimize model.gguf --dry-run
 
+# Sweep, then write a deployment package you can run, containerise and check
+armforge optimize model.gguf --export ./deploy
+
 # Which llama.cpp builds are available, and what did ggml actually compile in
 armforge runtimes --probe --model model.gguf
 ```
 
 Every command has `--json` for scripting, and `optimize`/`benchmark` accept
 `--output` to write a full-provenance result artifact.
+
+### The deployment package
+
+`--export` writes a directory that stands on its own — no ArmForge install
+required to use it, and nothing in it has to be taken on trust:
+
+| File | Contents |
+| --- | --- |
+| `run.sh` | Runs the model with the measured per-phase thread split |
+| `Dockerfile` | Pins the same llama.cpp commit and build flags that were measured |
+| `report.html` | Self-contained report with charts — no network, no scripts, no fonts |
+| `config.json` | The winning configuration, machine-readable |
+| `benchmark.json` | Every candidate measured, with full provenance |
+| `README.md` | The configuration, the evidence, and what the numbers are not |
+
+The model file is referenced by path and content hash, never copied — so the
+package stays small and you can verify you hold the same weights the
+measurements describe.
+
+Verified by running it, not by reading it. The generated script produces:
+
+```
+n_threads = 4 (n_threads_batch = 8)
+```
+
+— llama.cpp confirming the per-phase split actually took effect in the
+runtime, rather than merely being written down.
 
 ---
 
@@ -254,10 +284,11 @@ summary. This is what supplied the Neoverse-N2 half of every comparison above.
 ## What's not built yet
 
 - Web dashboard and FastAPI service (CLI + JSON are the interface for now)
-- HTML export/deployment package generator
 - Additional model families beyond Qwen2.5 (architecture supports it;
   not yet validated)
 - ONNX Runtime as a second backend
+- Output-quality measurement — everything here is throughput, so ArmForge
+  cannot currently tell you what a faster quantisation costs you in accuracy
 
 ## License
 

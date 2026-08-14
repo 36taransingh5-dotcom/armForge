@@ -64,3 +64,44 @@ def test_detection_is_internally_consistent():
 
 def test_detect_host_is_cached():
     assert detect_host() is detect_host()
+
+
+def test_export_command_rebuilds_a_package_from_a_saved_sweep(tmp_path):
+    """A committed artifact must regenerate a package on any machine."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "results"
+    artifact = source / "neoverse-n2-sweep-longcontext.json"
+    if not artifact.is_file():
+        import pytest
+
+        pytest.skip("Neoverse artifact not present")
+
+    out = tmp_path / "package"
+    result = runner.invoke(app, ["export", str(artifact), "-o", str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert (out / "run.sh").is_file()
+    assert (out / "report.html").is_file()
+    # The recommendation for the uniform CI machine, rebuilt on this one.
+    assert "-t 4 -tb 4" in (out / "config.json").read_text()
+
+
+def test_export_rejects_a_file_that_is_not_a_sweep(tmp_path):
+    bad = tmp_path / "notasweep.json"
+    bad.write_text('{"status": "ok"}')
+
+    result = runner.invoke(app, ["export", str(bad), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 1
+    assert "not an ArmForge sweep" in result.output
+
+
+def test_export_rejects_unreadable_json(tmp_path):
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json")
+
+    result = runner.invoke(app, ["export", str(broken), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 1
+    assert "could not read" in result.output
