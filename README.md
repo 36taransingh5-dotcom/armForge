@@ -158,6 +158,22 @@ n_threads = 4 (n_threads_batch = 8)
 — llama.cpp confirming the per-phase split actually took effect in the
 runtime, rather than merely being written down.
 
+### Web UI
+
+A dashboard, sweep runner and results viewer over the same engine — no mock
+mode, every page calls a FastAPI backend that runs the real pipeline.
+
+```bash
+pip install -r backend/requirements.txt
+PYTHONPATH=backend uvicorn app.main:app --port 8000
+```
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Details, endpoints and design constraints: [**docs/WEB_UI.md**](docs/WEB_UI.md).
+
 ---
 
 ## What ArmForge actually measured
@@ -283,7 +299,6 @@ summary. This is what supplied the Neoverse-N2 half of every comparison above.
 
 ## What's not built yet
 
-- Web dashboard and FastAPI service (CLI + JSON are the interface for now)
 - Additional model families beyond Qwen2.5 (architecture supports it;
   not yet validated)
 - ONNX Runtime as a second backend

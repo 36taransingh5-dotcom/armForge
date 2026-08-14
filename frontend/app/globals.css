@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Same palette as armforge/report/html.py's exported report, so the live UI
+ * and the offline artifact it produces read as one product rather than two.
+ *
+ * Values are space-separated RGB channels, not hex: Tailwind's opacity
+ * modifiers (bg-accent/10, border-line/60) only work when the color function
+ * can inject an alpha channel, which needs `rgb(var(--x) / <alpha>)` rather
+ * than a hex literal. See tailwind.config.ts.
+ */
+:root {
+  --bg: 255 255 255;
+  --fg: 31 35 40;
+  --muted: 101 109 118;
+  --line: 208 215 222;
+  --accent: 9 105 218;
+  --warn: 154 103 0;
+  --warn-bg: 255 248 197;
+  --code-bg: 246 248 250;
+  --ok: 26 127 55;
+  --bad: 207 34 46;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: 13 17 23;
+    --fg: 230 237 243;
+    --muted: 139 148 158;
+    --line: 48 54 61;
+    --accent: 68 147 248;
+    --warn: 210 153 34;
+    --warn-bg: 45 34 5;
+    --code-bg: 22 27 34;
+    --ok: 63 185 80;
+    --bad: 248 81 73;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}

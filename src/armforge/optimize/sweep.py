@@ -20,6 +20,9 @@ from .candidates import CandidatePlan
 #: Called with (index, total, candidate label) before each measurement.
 ProgressCallback = Callable[[int, int, str], None]
 
+#: Called with the result immediately after each measurement completes.
+ResultCallback = Callable[[BenchmarkResult], None]
+
 
 @dataclass
 class SweepReport:
@@ -67,6 +70,7 @@ def run_sweep(
     host: HostProfile,
     *,
     on_progress: ProgressCallback | None = None,
+    on_result: ResultCallback | None = None,
     runner_factory: Callable[[object], BenchmarkRunner] = _runner_for,
 ) -> SweepReport:
     """Measure every candidate in ``plan``.
@@ -74,6 +78,11 @@ def run_sweep(
     Runners convert their own failures into results, so one broken
     configuration cannot end the sweep -- the report keeps the failure and
     carries on.
+
+    ``on_result`` fires after each measurement, with the result itself --
+    unlike ``on_progress``, which fires beforehand with only a label. A caller
+    that wants to stream results as they land (a web UI polling job state)
+    needs the former; the CLI's progress line only needs the latter.
     """
     report = SweepReport(host=host, plan=plan)
     total = len(plan.candidates)
@@ -90,7 +99,10 @@ def run_sweep(
         if key not in runners:
             runners[key] = runner_factory(candidate)
 
-        report.results.append(runners[key].run(candidate.config, host))
+        result = runners[key].run(candidate.config, host)
+        report.results.append(result)
+        if on_result:
+            on_result(result)
 
     report.finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return report
