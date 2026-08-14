@@ -457,6 +457,11 @@ def optimize(
     ),
     iterations: int = typer.Option(5, "--iterations", "-r", help="Repetitions."),
     output: str = typer.Option(None, "--output", "-o", help="Write full report JSON."),
+    export: str = typer.Option(
+        None,
+        "--export",
+        help="Write a deployment package (config, run.sh, Dockerfile, report) here.",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show the measurement plan without running it."
     ),
@@ -546,6 +551,18 @@ def optimize(
         raise typer.Exit(code=1)
 
     _render_recommendation(rec)
+
+    if export:
+        from .report import export_package
+
+        written = export_package(report, rec, Path(export))
+        console.print("[bold]Deployment package[/bold]")
+        console.print()
+        for path in written:
+            console.print(f"  [dim]·[/dim] {path}")
+        console.print()
+        console.print(f"  [dim]open {Path(export) / 'report.html'} for the full report[/dim]")
+        console.print()
 
     if output:
         console.print(f"  [dim]full report written to {output}[/dim]")

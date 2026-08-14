@@ -20,14 +20,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from armforge.report.charts import line_chart  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "results"
 DOCS_DIR = ROOT / "docs"
 CHARTS_DIR = DOCS_DIR / "charts"
 
-# Legible on white and on GitHub's dark background alike.
-INK = "#8b949e"
-SERIES = {"prefill": "#3b82f6", "decode": "#f59e0b"}
 QUANT_COLOR = {"Q4_0": "#3b82f6", "Q4_K_M": "#a855f7"}
 
 
@@ -72,9 +72,7 @@ class Sweep:
         return sorted(points)
 
     def variants(self) -> list[str]:
-        seen = {
-            r["config"]["runtime"]["build_flags"].get("variant") for r in self.results
-        }
+        seen = {r["config"]["runtime"]["build_flags"].get("variant") for r in self.results}
         return sorted(v for v in seen if v)
 
     def quantizations(self) -> list[str]:
@@ -127,116 +125,6 @@ class Sweep:
         return None
 
 
-# --------------------------------------------------------------------------
-# SVG charts
-# --------------------------------------------------------------------------
-
-
-def _line_chart(
-    title: str,
-    series: dict[str, list[tuple[int, float, float]]],
-    colors: dict[str, str],
-    *,
-    y_label: str,
-    width: int = 560,
-    height: int = 300,
-) -> str:
-    """A small multi-series line chart over thread count."""
-    # A legend is redundant when the title already names the only series.
-    show_legend = len(series) > 1
-    pad_l, pad_r, pad_t, pad_b = 58, (130 if show_legend else 24), 34, 44
-    plot_w = width - pad_l - pad_r
-    plot_h = height - pad_t - pad_b
-
-    all_points = [p for pts in series.values() for p in pts]
-    if not all_points:
-        return ""
-
-    xs = sorted({p[0] for p in all_points})
-    y_max = max(p[1] + p[2] for p in all_points) * 1.12
-    x_min, x_max = min(xs), max(xs)
-
-    def sx(x: float) -> float:
-        if x_max == x_min:
-            return pad_l + plot_w / 2
-        return pad_l + (x - x_min) / (x_max - x_min) * plot_w
-
-    def sy(y: float) -> float:
-        return pad_t + plot_h - (y / y_max) * plot_h
-
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}" font-family="system-ui,sans-serif">',
-        f'<text x="{pad_l}" y="20" font-size="13" font-weight="600" '
-        f'fill="{INK}">{title}</text>',
-    ]
-
-    # Horizontal gridlines with value labels.
-    for step in range(5):
-        value = y_max * step / 4
-        y = sy(value)
-        parts.append(
-            f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" '
-            f'stroke="{INK}" stroke-opacity="0.18" stroke-width="1"/>'
-        )
-        parts.append(
-            f'<text x="{pad_l - 8}" y="{y + 4:.1f}" font-size="10" text-anchor="end" '
-            f'fill="{INK}" fill-opacity="0.75">{value:.0f}</text>'
-        )
-
-    # X axis ticks at the measured thread counts.
-    for x in xs:
-        parts.append(
-            f'<text x="{sx(x):.1f}" y="{pad_t + plot_h + 18}" font-size="10" '
-            f'text-anchor="middle" fill="{INK}" fill-opacity="0.75">{x}</text>'
-        )
-    parts.append(
-        f'<text x="{pad_l + plot_w / 2:.1f}" y="{height - 8}" font-size="11" '
-        f'text-anchor="middle" fill="{INK}" fill-opacity="0.85">threads</text>'
-    )
-    parts.append(
-        f'<text x="14" y="{pad_t + plot_h / 2:.1f}" font-size="11" fill="{INK}" '
-        f'fill-opacity="0.85" text-anchor="middle" '
-        f'transform="rotate(-90 14 {pad_t + plot_h / 2:.1f})">{y_label}</text>'
-    )
-
-    for index, (label, points) in enumerate(series.items()):
-        if not points:
-            continue
-        color = colors.get(label, "#3b82f6")
-        path = " ".join(
-            f"{'M' if i == 0 else 'L'}{sx(x):.1f},{sy(y):.1f}"
-            for i, (x, y, _) in enumerate(points)
-        )
-        parts.append(
-            f'<path d="{path}" fill="none" stroke="{color}" stroke-width="2.2" '
-            f'stroke-linejoin="round"/>'
-        )
-        for x, y, sd in points:
-            if sd > 0:
-                parts.append(
-                    f'<line x1="{sx(x):.1f}" y1="{sy(y - sd):.1f}" '
-                    f'x2="{sx(x):.1f}" y2="{sy(y + sd):.1f}" '
-                    f'stroke="{color}" stroke-width="1.4" stroke-opacity="0.55"/>'
-                )
-            parts.append(
-                f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3.4" fill="{color}"/>'
-            )
-        if show_legend:
-            legend_y = pad_t + 6 + index * 18
-            parts.append(
-                f'<rect x="{pad_l + plot_w + 16}" y="{legend_y - 8}" width="10" '
-                f'height="10" rx="2" fill="{color}"/>'
-            )
-            parts.append(
-                f'<text x="{pad_l + plot_w + 32}" y="{legend_y + 1}" font-size="11" '
-                f'fill="{INK}">{label}</text>'
-            )
-
-    parts.append("</svg>")
-    return "\n".join(parts)
-
-
 def _write_chart(name: str, svg: str) -> str | None:
     if not svg:
         return None
@@ -253,8 +141,7 @@ def _write_chart(name: str, svg: str) -> str | None:
 def _machine_row(sweep: Sweep) -> str:
     cpu = sweep.cpu
     clusters = " + ".join(
-        f"{c['physical_cores']}× {c.get('core_name') or c['name']}"
-        for c in cpu["clusters"]
+        f"{c['physical_cores']}× {c.get('core_name') or c['name']}" for c in cpu["clusters"]
     )
     sve = f"{cpu['sve_vector_bits']}-bit" if cpu.get("sve_vector_bits") else "absent"
     sme = f"{cpu['sme_vector_bits']}-bit" if cpu.get("sme_vector_bits") else "absent"
@@ -369,10 +256,9 @@ def build(sweeps: dict[tuple[str, str], Sweep]) -> str:
         for phase, metric in (("prefill", "prefill_tps"), ("decode", "decode_tps")):
             chart = _write_chart(
                 f"{slug}-{phase}.svg",
-                _line_chart(
+                line_chart(
                     f"{sweep.cpu['model']} — Q4_0 {phase}",
                     {phase: sweep.series(metric, quant="Q4_0")},
-                    SERIES,
                     y_label="tok/s",
                     width=430,
                     height=270,
@@ -444,8 +330,8 @@ def build(sweeps: dict[tuple[str, str], Sweep]) -> str:
     )
     add("")
     add(
-        "This is a prompt-processing result and should not be read as \"Q4_0 is "
-        "better\". On the M4 at 6 and 10 threads, Q4_K_M actually **decodes "
+        'This is a prompt-processing result and should not be read as "Q4_0 is '
+        'better". On the M4 at 6 and 10 threads, Q4_K_M actually **decodes '
         "faster**. That is why the recommendation is made per phase."
     )
     add("")
@@ -465,10 +351,7 @@ def build(sweeps: dict[tuple[str, str], Sweep]) -> str:
 
         for sweep in kleidi_sweeps:
             has_sme = "sme2" in sweep.cpu["features"]
-            add(
-                f"**{sweep.cpu['model']}** — SME2 "
-                f"{'present' if has_sme else 'absent'}"
-            )
+            add(f"**{sweep.cpu['model']}** — SME2 {'present' if has_sme else 'absent'}")
             add("")
             add("| Threads | Stock ggml | KleidiAI | Change |")
             add("| ---: | ---: | ---: | ---: |")
@@ -495,10 +378,9 @@ def build(sweeps: dict[tuple[str, str], Sweep]) -> str:
             if has_sme and len(deltas) > 2:
                 chart = _write_chart(
                     "kleidiai-gain.svg",
-                    _line_chart(
+                    line_chart(
                         f"{sweep.cpu['model']} — KleidiAI prefill gain vs threads",
                         {"gain %": deltas},
-                        {"gain %": "#10b981"},
                         y_label="% faster",
                         width=460,
                         height=280,
@@ -573,8 +455,7 @@ def build(sweeps: dict[tuple[str, str], Sweep]) -> str:
             add("| --- | ---: |")
             add(f"| stock ggml | {base_peak / 1024**2:.0f} MiB |")
             add(
-                f"| KleidiAI | {kle_peak / 1024**2:.0f} MiB "
-                f"(**{_pct(kle_peak, base_peak)}**) |"
+                f"| KleidiAI | {kle_peak / 1024**2:.0f} MiB (**{_pct(kle_peak, base_peak)}**) |"
             )
             add("")
             add(
@@ -655,9 +536,7 @@ def main() -> int:
         if "results" not in raw or "host" not in raw:
             continue
         model = raw["host"]["cpu"]["model"].lower()
-        machine = (
-            "m4" if "apple" in model else "neoverse" if "neoverse" in model else None
-        )
+        machine = "m4" if "apple" in model else "neoverse" if "neoverse" in model else None
         if machine is None:
             continue
 
