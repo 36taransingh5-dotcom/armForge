@@ -1,0 +1,148 @@
+name: Arm64 sweep
+
+# Runs the full ArmForge sweep on a real Arm64 Linux machine.
+#
+# GitHub's ubuntu-24.04-arm runners are Ampere Neoverse parts: uniform cores,
+# no efficiency cluster, SVE where the silicon provides it. That is the exact
+# structural opposite of an Apple M4 (4 performance + 6 efficiency cores, SME2
+# but no SVE), which is the point -- ArmForge should reach a *different*
+# recommendation here, for reasons it can state.
+#
+# The job publishes its results as an artifact and writes a summary table to
+# the run page, so anyone can re-run it and check the numbers themselves.
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Benchmark workload
+        default: long-context
+        type: choice
+        options: [short, long-context, code, summarize]
+      iterations:
+        description: Repetitions per measurement
+        default: "5"
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - ".github/workflows/arm64-sweep.yml"
+
+permissions:
+  contents: read
+
+env:
+  # Pinned so a rebuild measures our changes, not llama.cpp's.
+  LLAMA_CPP_COMMIT: a94d563ed801d1da1b8c2432946de07d0231bb3d
+  MODEL_REPO: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main
+
+jobs:
+  sweep:
+    name: Sweep on Arm64 Linux
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ArmForge
+        run: pip install -e ".[dev]"
+
+      - name: Verify architecture is actually Arm64
+        run: |
+          set -euo pipefail
+          arch="$(python -c 'import platform; print(platform.machine())')"
+          echo "runner architecture: $arch"
+          if [ "$arch" != "aarch64" ] && [ "$arch" != "arm64" ]; then
+            echo "::error::expected an Arm64 runner, got $arch"
+            exit 1
+          fi
+
+      - name: Detect hardware
+        run: |
+          armforge hardware --explain
+          armforge hardware --json > hardware.json
+
+      - name: Run unit tests on Arm64
+        run: pytest -q
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential ccache
+
+      - name: Cache llama.cpp builds
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/armforge/llama.cpp
+          key: llamacpp-${{ runner.arch }}-${{ env.LLAMA_CPP_COMMIT }}-v1
+
+      - name: Build llama.cpp variants
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/armforge
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git \
+            ~/.cache/armforge/llama.cpp
+          git -C ~/.cache/armforge/llama.cpp checkout --quiet "$LLAMA_CPP_COMMIT"
+          scripts/setup-llama-cpp.sh --jobs "$(nproc)"
+
+      - name: Show discovered runtimes
+        run: armforge runtimes
+
+      - name: Cache models
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/armforge/models
+          key: qwen2.5-0.5b-q4_0-q4_k_m-v1
+
+      - name: Download models
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.cache/armforge/models
+          for q in q4_0 q4_k_m; do
+            f="qwen2.5-0.5b-instruct-$q.gguf"
+            curl -fsSL -o ~/.cache/armforge/models/"$f" "$MODEL_REPO/$f"
+          done
+          ls -lh ~/.cache/armforge/models
+
+      - name: Analyze models
+        run: |
+          for m in ~/.cache/armforge/models/*.gguf; do
+            armforge analyze "$m"
+          done
+
+      - name: Run sweep
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          armforge optimize \
+            ~/.cache/armforge/models/qwen2.5-0.5b-instruct-q4_0.gguf \
+            ~/.cache/armforge/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+            --workload "${{ inputs.workload || 'long-context' }}" \
+            --iterations "${{ inputs.iterations || '5' }}" \
+            --output results/arm64-linux-sweep.json \
+            | tee sweep.log
+
+      - name: Write summary
+        if: always()
+        run: python scripts/summarize_run.py >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-sweep-results
+          path: |
+            results/*.json
+            hardware.json
+            sweep.log
+          if-no-files-found: warn
