@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -176,6 +177,177 @@ def hardware(
             console.print(f"  {info.inference_impact}")
 
     _render_notes(host)
+    console.print()
+
+
+@app.command()
+def analyze(
+    model: str = typer.Argument(..., help="Path to a .gguf model file."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the analysis as JSON."),
+) -> None:
+    """Inspect a GGUF model and relate it to this machine's Arm capabilities."""
+    from .analyzer import GGUFError, read_gguf
+
+    try:
+        info = read_gguf(model)
+    except GGUFError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    host = detect_host()
+
+    if as_json:
+        console.print_json(
+            json.dumps({"model": info.to_dict(), "host": host.to_dict()})
+        )
+        return
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", justify="right")
+    table.add_column()
+    table.add_row("Model", info.name or "unknown")
+    table.add_row("File", Path(info.path).name)
+    table.add_row("Architecture", info.architecture or "unknown")
+    table.add_row("Quantization", info.quantization or "[yellow]unknown[/yellow]")
+    if info.parameter_count:
+        table.add_row("Parameters", f"{info.parameter_count / 1e9:.2f} B")
+    table.add_row("File size", _format_bytes(info.file_size_bytes))
+    if info.bits_per_weight:
+        table.add_row("Bits/weight", f"{info.bits_per_weight:.2f}")
+    if info.context_length:
+        table.add_row("Context", f"{info.context_length:,} tokens")
+    table.add_row("Tensors", str(info.tensor_count))
+
+    console.print()
+    console.print("[bold]ArmForge[/bold] [dim]·[/dim] Model analysis")
+    console.print()
+    console.print(table)
+
+    console.print()
+    console.print(f"[bold]Arm outlook on {host.cpu.model}[/bold]")
+    console.print()
+    for line in _arm_outlook(info, host):
+        console.print(f"  {line}")
+    console.print()
+    console.print(
+        "  [dim]These are predictions from the capability model, not "
+        "measurements.\n  Run 'armforge benchmark' to test them.[/dim]"
+    )
+    console.print()
+
+
+def _arm_outlook(info, host: HostProfile) -> list[str]:
+    """Predictions this machine's capability vector implies for this model.
+
+    Deliberately phrased as expectations to be tested. Nothing here is a
+    measurement, and the CLI says so.
+    """
+    cpu = host.cpu
+    lines: list[str] = []
+
+    if not cpu.is_arm64:
+        return ["[yellow]![/yellow] Not an Arm64 host; no Arm analysis available."]
+
+    quant = info.quantization
+    if quant is None:
+        lines.append(
+            "[yellow]?[/yellow] Quantization unknown, so no format-specific "
+            "prediction can be made."
+        )
+    elif info.repackable_for_i8mm and cpu.has("i8mm"):
+        lines.append(
+            f"[green]✓[/green] {quant} can be repacked to feed SMMLA, and this "
+            "CPU reports FEAT_I8MM.\n    Expect prefill to gain more than decode."
+        )
+    elif info.repackable_for_i8mm:
+        lines.append(
+            f"[yellow]~[/yellow] {quant} is repackable, but this CPU lacks "
+            "FEAT_I8MM, so that layout\n    buys nothing here."
+        )
+    else:
+        lines.append(
+            f"[dim]·[/dim] {quant} is a K-quant with no int8 matrix fast path; "
+            "FEAT_I8MM will go\n    unused regardless of the hardware."
+        )
+
+    if cpu.has("sme2"):
+        lines.append(
+            "[green]✓[/green] FEAT_SME2 present. Only a KleidiAI-enabled build "
+            "can reach it;\n    a stock build will leave it idle."
+        )
+
+    if cpu.is_heterogeneous:
+        lines.append(
+            f"[yellow]![/yellow] Heterogeneous CPU: {cpu.performance_cores} "
+            f"performance + {cpu.physical_cores - cpu.performance_cores} "
+            "efficiency cores.\n    Expect decode to peak at or below "
+            f"{cpu.performance_cores} threads, not {cpu.physical_cores}."
+        )
+
+    if info.file_size_bytes > (host.available_memory_bytes or 0):
+        lines.append(
+            "[yellow]![/yellow] Model is larger than currently available memory; "
+            "expect paging to\n    distort results."
+        )
+
+    return lines
+
+
+@app.command()
+def runtimes(
+    probe: bool = typer.Option(
+        False,
+        "--probe",
+        help="Run each build once to record which Arm code paths it compiled in.",
+    ),
+    model: str = typer.Option(
+        None, "--model", help="Model used for probing (required with --probe)."
+    ),
+) -> None:
+    """List the llama.cpp builds ArmForge can benchmark against."""
+    from .bench.llamacpp import discover_runtimes, probe_ggml_features
+
+    found = discover_runtimes()
+    console.print()
+    console.print("[bold]ArmForge[/bold] [dim]·[/dim] Runtimes")
+    console.print()
+
+    if not found:
+        console.print(
+            "  [yellow]No llama.cpp builds found.[/yellow]\n"
+            "  Run [bold]scripts/setup-llama-cpp.sh[/bold] to build them."
+        )
+        console.print()
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Variant", style="bold")
+    table.add_column("Commit", style="dim")
+    table.add_column("KleidiAI")
+    table.add_column("Accelerate")
+    if probe:
+        table.add_column("ggml reports")
+
+    for spec in found:
+        row = [
+            spec.build_flags.get("variant", "?"),
+            spec.version,
+            "[green]on[/green]" if spec.build_flags.get("kleidiai") else "[dim]off[/dim]",
+            "[green]on[/green]" if spec.build_flags.get("accelerate") else "[dim]off[/dim]",
+        ]
+        if probe:
+            if not model:
+                row.append("[yellow]--model required[/yellow]")
+            else:
+                features = probe_ggml_features(spec, model)
+                row.append(
+                    ", ".join(sorted(k for k, v in features.items() if v))
+                    if features
+                    else "[yellow]probe failed[/yellow]"
+                )
+        table.add_row(*row)
+
+    console.print(table)
     console.print()
 
 
