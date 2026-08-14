@@ -143,9 +143,7 @@ def test_nonzero_exit_becomes_a_failed_result(monkeypatch, bench_config, apple_h
 
 
 def test_missing_binary_is_unsupported_with_a_useful_reason(bench_config, apple_host):
-    runtime = RuntimeSpec(
-        name="llama.cpp", version="x", binary_path="/nonexistent/llama-bench"
-    )
+    runtime = RuntimeSpec(name="llama.cpp", version="x", binary_path="/nonexistent/llama-bench")
     result = LlamaCppRunner(runtime).run(bench_config, apple_host)
 
     assert result.status is Status.UNSUPPORTED

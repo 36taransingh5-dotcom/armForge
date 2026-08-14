@@ -106,12 +106,18 @@ class LlamaCppRunner(BenchmarkRunner):
         """
         return [
             self.runtime.binary_path,
-            "--model", config.model.path,
-            "--n-prompt", str(config.workload.prompt_tokens),
-            "--n-gen", str(config.workload.generate_tokens),
-            "--threads", str(config.threads),
-            "--repetitions", str(config.iterations),
-            "--output", "json",
+            "--model",
+            config.model.path,
+            "--n-prompt",
+            str(config.workload.prompt_tokens),
+            "--n-gen",
+            str(config.workload.generate_tokens),
+            "--threads",
+            str(config.threads),
+            "--repetitions",
+            str(config.iterations),
+            "--output",
+            "json",
         ]
 
     def execute(self, config: BenchConfig, host: HostProfile) -> BenchmarkResult:
@@ -264,11 +270,15 @@ def probe_ggml_features(
 
     argv = [
         str(cli),
-        "--model", model_path,
-        "--prompt", "x",
-        "--n-predict", "1",
+        "--model",
+        model_path,
+        "--prompt",
+        "x",
+        "--n-predict",
+        "1",
         "--no-warmup",
-        "--threads", "1",
+        "--threads",
+        "1",
     ]
     try:
         result = process.run(argv, timeout=timeout)

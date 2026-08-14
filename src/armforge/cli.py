@@ -197,9 +197,7 @@ def analyze(
     host = detect_host()
 
     if as_json:
-        console.print_json(
-            json.dumps({"model": info.to_dict(), "host": host.to_dict()})
-        )
+        console.print_json(json.dumps({"model": info.to_dict(), "host": host.to_dict()}))
         return
 
     table = Table.grid(padding=(0, 2))
@@ -444,6 +442,220 @@ def benchmark(
     if output:
         console.print()
         console.print(f"  [dim]result written to {output}[/dim]")
+    console.print()
+
+
+@app.command()
+def optimize(
+    models: list[str] = typer.Argument(..., help="One or more .gguf model files."),
+    workload: str = typer.Option("short", "--workload", "-w", help="Workload name."),
+    objective: str = typer.Option(
+        "best-balance", "--objective", help="fastest | lowest-memory | best-balance."
+    ),
+    variants: str = typer.Option(
+        None, "--variants", help="Comma-separated build variants (default: all found)."
+    ),
+    iterations: int = typer.Option(5, "--iterations", "-r", help="Repetitions."),
+    output: str = typer.Option(None, "--output", "-o", help="Write full report JSON."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the measurement plan without running it."
+    ),
+) -> None:
+    """Sweep configurations, then recommend and justify one."""
+    from .bench import workloads as wl
+    from .bench.llamacpp import discover_runtimes
+    from .optimize import Objective, estimate_duration, generate, recommend, run_sweep
+
+    host = detect_host()
+
+    try:
+        shape = wl.get(workload)
+        goal = Objective(objective)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    found = discover_runtimes()
+    if variants:
+        wanted = {v.strip() for v in variants.split(",")}
+        found = [r for r in found if r.build_flags.get("variant") in wanted]
+    if not found:
+        console.print(
+            "[red]error:[/red] no llama.cpp builds found. Run scripts/setup-llama-cpp.sh."
+        )
+        raise typer.Exit(code=1)
+
+    plan = generate(host, list(models), found, shape, iterations=iterations)
+
+    console.print()
+    console.print("[bold]ArmForge[/bold] [dim]·[/dim] Optimize")
+    console.print()
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="dim", justify="right")
+    summary.add_column()
+    summary.add_row("Host", f"{host.cpu.model} [dim]·[/dim] {host.cpu.architecture}")
+    summary.add_row("Workload", f"{shape.name} [dim]({shape.description})[/dim]")
+    summary.add_row("Objective", goal.value)
+    summary.add_row(
+        "Plan",
+        f"{len(plan)} candidates, {len(plan.pruned)} pruned "
+        f"[dim](~{estimate_duration(plan) / 60:.0f} min)[/dim]",
+    )
+    console.print(summary)
+
+    if plan.notes:
+        console.print()
+        for note in plan.notes:
+            console.print(f"  [dim]·[/dim] {note}")
+    if plan.pruned:
+        console.print()
+        console.print("  [bold]Not measured[/bold]")
+        for item in plan.pruned:
+            console.print(f"  [dim]✗ {item.label}: {item.reason}[/dim]")
+
+    if not plan.candidates:
+        console.print("\n[yellow]Nothing to measure.[/yellow]\n")
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        console.print()
+        for candidate in plan.candidates:
+            console.print(f"  [dim]•[/dim] {candidate.label}")
+            console.print(f"    [dim]{candidate.rationale}[/dim]")
+        console.print()
+        return
+
+    console.print()
+
+    def progress(index: int, total: int, label: str) -> None:
+        console.print(f"  [dim][{index}/{total}][/dim] {label}")
+
+    report = run_sweep(plan, host, on_progress=progress)
+
+    if output:
+        payload = report.to_dict()
+        rec_preview = recommend(report.results, host, goal)
+        payload["recommendation"] = rec_preview.to_dict() if rec_preview else None
+        Path(output).write_text(json.dumps(payload, indent=2))
+
+    _render_sweep_results(report)
+
+    rec = recommend(report.results, host, goal)
+    if rec is None:
+        console.print("\n[yellow]No configuration could be measured.[/yellow]\n")
+        raise typer.Exit(code=1)
+
+    _render_recommendation(rec)
+
+    if output:
+        console.print(f"  [dim]full report written to {output}[/dim]")
+        console.print()
+
+
+def _render_sweep_results(report) -> None:
+    console.print()
+    console.print("[bold]Measurements[/bold]")
+    console.print()
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+    table.add_column("Configuration", style="bold")
+    table.add_column("Prefill tok/s", justify="right")
+    table.add_column("Decode tok/s", justify="right")
+    table.add_column("Peak mem", justify="right")
+
+    for result in report.results:
+        if not result.ok:
+            table.add_row(
+                f"[dim]{result.config.label}[/dim]",
+                f"[yellow]{result.status.value}[/yellow]",
+                "",
+                "",
+            )
+            continue
+
+        def cell(stats):
+            if stats is None:
+                return "[dim]n/a[/dim]"
+            noisy = stats.relative_stddev > 0.05
+            text = f"{stats.mean:.1f} ± {stats.stddev:.1f}"
+            return f"[yellow]{text}[/yellow]" if noisy else text
+
+        table.add_row(
+            result.config.label,
+            cell(result.prefill_tps),
+            cell(result.decode_tps),
+            _format_bytes(result.peak_memory_bytes),
+        )
+
+    console.print(table)
+    console.print(
+        f"\n  [dim]{len(report.succeeded)} measured, {len(report.failed)} failed. "
+        "Yellow marks >5% run-to-run variation.[/dim]"
+    )
+
+
+def _render_recommendation(rec) -> None:
+    console.print()
+    console.print(f"[bold]Recommendation[/bold] [dim]· {rec.objective.value}[/dim]")
+    console.print()
+
+    config = rec.winner.result.config
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", justify="right")
+    table.add_column()
+    table.add_row("Model", f"{config.model.quantization} [dim]{config.model.name}[/dim]")
+    table.add_row("Runtime", config.runtime.label)
+    if rec.prefill:
+        table.add_row(
+            "Prefill threads",
+            f"[bold]{rec.prefill.threads}[/bold]  "
+            f"[dim]{rec.prefill.throughput:.1f} tok/s[/dim]",
+        )
+    if rec.decode:
+        table.add_row(
+            "Decode threads",
+            f"[bold]{rec.decode.threads}[/bold]  [dim]{rec.decode.throughput:.1f} tok/s[/dim]",
+        )
+    console.print(table)
+
+    if rec.reasons:
+        console.print()
+        console.print("  [bold]Why[/bold]")
+        for reason in rec.reasons:
+            console.print(f"  [green]·[/green] {reason}")
+
+    if rec.baseline is not None:
+        console.print()
+        console.print(
+            f"  [dim]Compared against the naive default: "
+            f"{rec.baseline.config.threads} threads "
+            f"({rec.baseline.config.model.quantization}, "
+            f"{rec.baseline.config.runtime.label}).[/dim]"
+        )
+
+    if rec.warnings:
+        console.print()
+        console.print("  [bold yellow]Caveats[/bold yellow]")
+        for warning in rec.warnings:
+            console.print(f"  [yellow]![/yellow] {warning}")
+
+    if rec.pareto:
+        console.print()
+        console.print(
+            "  [bold]Pareto frontier[/bold] [dim](no candidate beats these "
+            "on speed and memory at once)[/dim]"
+        )
+        for result in rec.pareto:
+            console.print(
+                f"  [dim]·[/dim] {result.config.label}  "
+                f"[dim]{result.prefill_tps.mean:.0f} prefill / "
+                f"{result.decode_tps.mean:.0f} decode tok/s[/dim]"
+            )
+
+    console.print()
+    console.print("[bold]Deploy[/bold]")
+    console.print()
+    console.print(f"  [cyan]{rec.deployment_command}[/cyan]")
     console.print()
 
 
