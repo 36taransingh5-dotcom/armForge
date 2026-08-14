@@ -137,6 +137,15 @@ class HostProfile:
     def total_memory_gb(self) -> float:
         return self.total_memory_bytes / (1024**3)
 
+    @property
+    def is_macos(self) -> bool:
+        """Whether this profile was taken on macOS.
+
+        Read from the profile rather than from ``sys.platform`` so it stays
+        correct for a profile deserialised from another machine.
+        """
+        return self.detector == "darwin-sysctl" or self.os_name == "macOS"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "cpu": self.cpu.to_dict(),

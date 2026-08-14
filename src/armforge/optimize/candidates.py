@@ -233,6 +233,25 @@ def generate(
         for runtime in runtimes:
             runtime_note = _runtime_note(runtime, cpu)
 
+            # GGML_ACCELERATE selects Apple's Accelerate framework, which does
+            # not exist off macOS. On Linux the flag is accepted and silently
+            # does nothing, so the build is byte-for-byte the baseline and
+            # measuring it just burns bench time. A Neoverse-N2 CI sweep spent
+            # a third of its 50 minutes proving cpu and accelerate agree to
+            # within 0.4%.
+            if runtime.build_flags.get("accelerate") and not host.is_macos:
+                pruned.append(
+                    Pruned(
+                        label=f"{model_ref.quantization} · {runtime.label}",
+                        reason=(
+                            "GGML_ACCELERATE only has an effect on macOS; on "
+                            f"{host.os_name} this build is identical to the "
+                            "baseline"
+                        ),
+                    )
+                )
+                continue
+
             # KleidiAI's micro-kernels target int8 matrix and SME paths. On a
             # CPU with neither, the build cannot do anything the baseline
             # cannot, so measuring it is a waste of bench time.

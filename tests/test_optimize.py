@@ -159,6 +159,51 @@ def test_plan_prunes_kleidiai_on_a_cpu_without_i8mm_or_sme(tmp_path, graviton_ho
     assert all(not c.config.runtime.build_flags.get("kleidiai") for c in plan.candidates)
 
 
+ACCELERATE = RuntimeSpec(
+    name="llama.cpp",
+    version="a94d563",
+    binary_path="/b/acc/llama-bench",
+    build_flags={"variant": "accelerate", "kleidiai": False, "accelerate": True},
+)
+
+
+def test_plan_prunes_accelerate_off_macos(tmp_path, graviton_host):
+    """GGML_ACCELERATE is a no-op on Linux, so the build duplicates the baseline."""
+    from tests.helpers import build_gguf
+
+    model = build_gguf(
+        tmp_path / "m.gguf",
+        metadata={"general.architecture": "llama", "general.file_type": 2},
+        tensors=[("w", (16, 16))],
+    )
+    plan = generate(graviton_host, [model], [STOCK, ACCELERATE], SHORT)
+
+    assert any("only has an effect on macOS" in p.reason for p in plan.pruned)
+    assert all(not c.config.runtime.build_flags.get("accelerate") for c in plan.candidates)
+
+
+def test_plan_keeps_accelerate_on_macos(tmp_path, apple_host):
+    """On macOS it really does route prefill through Apple's BLAS."""
+    from tests.helpers import build_gguf
+
+    model = build_gguf(
+        tmp_path / "m.gguf",
+        metadata={"general.architecture": "llama", "general.file_type": 2},
+        tensors=[("w", (16, 16))],
+    )
+    plan = generate(apple_host, [model], [STOCK, ACCELERATE], SHORT)
+
+    assert any(c.config.runtime.build_flags.get("accelerate") for c in plan.candidates)
+
+
+def test_host_macos_detection_uses_the_profile_not_the_running_platform(
+    apple_host, graviton_host
+):
+    """A profile from another machine must still be classified correctly."""
+    assert apple_host.is_macos is True
+    assert graviton_host.is_macos is False
+
+
 def test_plan_keeps_kleidiai_when_the_cpu_can_reach_it(tmp_path, apple_host):
     from tests.helpers import build_gguf
 

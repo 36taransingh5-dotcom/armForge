@@ -78,9 +78,18 @@ build_variant() {
     echo "    ok: $build_dir/bin/llama-bench"
 }
 
-build_variant cpu        -DGGML_CPU_KLEIDIAI=OFF -DGGML_ACCELERATE=OFF -DGGML_BLAS=OFF
-build_variant kleidiai   -DGGML_CPU_KLEIDIAI=ON  -DGGML_ACCELERATE=OFF -DGGML_BLAS=OFF
-build_variant accelerate -DGGML_CPU_KLEIDIAI=OFF -DGGML_ACCELERATE=ON
+build_variant cpu      -DGGML_CPU_KLEIDIAI=OFF -DGGML_ACCELERATE=OFF -DGGML_BLAS=OFF
+build_variant kleidiai -DGGML_CPU_KLEIDIAI=ON  -DGGML_ACCELERATE=OFF -DGGML_BLAS=OFF
+
+# Accelerate is Apple's BLAS and exists only on macOS. Elsewhere the flag is
+# accepted and does nothing, producing a duplicate of the baseline -- which a
+# Neoverse-N2 CI run confirmed the hard way, agreeing with "cpu" to within
+# 0.4% after spending a third of the sweep proving it.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    build_variant accelerate -DGGML_CPU_KLEIDIAI=OFF -DGGML_ACCELERATE=ON
+else
+    echo "==> skipping accelerate variant: not macOS, GGML_ACCELERATE is a no-op here"
+fi
 
 echo
 echo "==> built variants:"
