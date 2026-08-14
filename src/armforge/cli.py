@@ -352,6 +352,102 @@ def runtimes(
 
 
 @app.command()
+def benchmark(
+    model: str = typer.Argument(..., help="Path to a .gguf model file."),
+    workload: str = typer.Option("short", "--workload", "-w", help="Workload name."),
+    threads: int = typer.Option(None, "--threads", "-t", help="Thread count."),
+    variant: str = typer.Option("cpu", "--variant", help="llama.cpp build variant."),
+    iterations: int = typer.Option(5, "--iterations", "-r", help="Repetitions."),
+    output: str = typer.Option(None, "--output", "-o", help="Write result JSON here."),
+) -> None:
+    """Benchmark one configuration and report the measured distribution."""
+    from .analyzer import GGUFError, read_gguf
+    from .bench import workloads as wl
+    from .bench.llamacpp import LlamaCppRunner, discover_runtimes
+    from .bench.types import BenchConfig, ModelRef
+
+    host = detect_host()
+
+    try:
+        shape = wl.get(workload)
+    except KeyError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    runtimes = {r.build_flags.get("variant"): r for r in discover_runtimes()}
+    if variant not in runtimes:
+        available = ", ".join(sorted(k for k in runtimes if k)) or "none"
+        console.print(
+            f"[red]error:[/red] no llama.cpp build named {variant!r} "
+            f"(available: {available}).\nRun scripts/setup-llama-cpp.sh."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        info = read_gguf(model)
+    except GGUFError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Default to performance-core count, not nproc: on a heterogeneous CPU
+    # the efficiency cores drag the whole thread pool down.
+    if threads is None:
+        threads = host.cpu.performance_cores
+
+    config = BenchConfig(
+        model=ModelRef(
+            path=str(Path(model).resolve()),
+            name=info.name or Path(model).stem,
+            size_bytes=info.file_size_bytes,
+            quantization=info.quantization,
+            n_params=info.parameter_count,
+        ),
+        runtime=runtimes[variant],
+        workload=shape,
+        threads=threads,
+        iterations=iterations,
+    )
+
+    console.print()
+    console.print(f"[dim]Running[/dim] {config.label} [dim]·[/dim] {shape.name}")
+    result = LlamaCppRunner(config.runtime).run(config, host)
+
+    if output:
+        Path(output).write_text(json.dumps(result.to_dict(), indent=2))
+
+    if not result.ok:
+        console.print(f"[red]{result.status.value}:[/red] {result.error}")
+        raise typer.Exit(code=1)
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", justify="right")
+    table.add_column()
+    for label, stats in (("Prefill", result.prefill_tps), ("Decode", result.decode_tps)):
+        if stats is None:
+            table.add_row(label, "[yellow]not measured[/yellow]")
+            continue
+        noise = stats.relative_stddev
+        flag = "  [yellow](noisy)[/yellow]" if noise > 0.05 else ""
+        table.add_row(
+            label,
+            f"{stats.mean:.2f} ± {stats.stddev:.2f} {stats.unit}  "
+            f"[dim]n={stats.samples}[/dim]{flag}",
+        )
+    if result.ttft_ms is not None:
+        table.add_row("TTFT", f"{result.ttft_ms:.0f} ms  [dim](derived)[/dim]")
+    if result.peak_memory_bytes:
+        table.add_row("Peak memory", _format_bytes(result.peak_memory_bytes))
+    table.add_row("Wall time", f"{result.wall_time_s:.1f} s")
+
+    console.print()
+    console.print(table)
+    if output:
+        console.print()
+        console.print(f"  [dim]result written to {output}[/dim]")
+    console.print()
+
+
+@app.command()
 def version() -> None:
     """Print the ArmForge version."""
     console.print(f"armforge {__version__}")

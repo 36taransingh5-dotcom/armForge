@@ -65,6 +65,15 @@ class LlamaCppRunner(BenchmarkRunner):
     def __init__(self, runtime: RuntimeSpec, *, timeout: float = 900.0) -> None:
         self.runtime = runtime
         self.timeout = timeout
+        # Probed once per runtime and reused: the answer is a property of the
+        # build, not of any individual benchmark.
+        self._ggml_features: dict[str, bool] | None = None
+
+    def ggml_features(self, model_path: str) -> dict[str, bool]:
+        """Which Arm code paths this build compiled in, probed on first use."""
+        if self._ggml_features is None:
+            self._ggml_features = probe_ggml_features(self.runtime, model_path)
+        return self._ggml_features
 
     # -- availability -----------------------------------------------------
 
@@ -171,7 +180,9 @@ class LlamaCppRunner(BenchmarkRunner):
                 "model_type": _first(rows, "model_type"),
                 "model_size": _first(rows, "model_size"),
                 "model_n_params": _first(rows, "model_n_params"),
-                "ggml_features": parse_ggml_features(result.stderr),
+                # llama-bench prints nothing on stderr in JSON mode, so the
+                # feature set comes from a separate one-off probe.
+                "ggml_features": self.ggml_features(config.model.path),
                 "rows": rows,
             },
         )
