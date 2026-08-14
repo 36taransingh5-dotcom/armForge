@@ -260,8 +260,7 @@ def generate(
                     Candidate(
                         config=config,
                         rationale=(
-                            f"{quant_note}; {runtime_note}; "
-                            f"{count} threads: {thread_note}"
+                            f"{quant_note}; {runtime_note}; {count} threads: {thread_note}"
                         ),
                     )
                 )

@@ -47,3 +47,7 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Put the repo root on sys.path so `tests.helpers` resolves. Without this,
+# bare `pytest` fails while `python -m pytest` works, because only the latter
+# adds the working directory -- a difference that hid this until CI ran.
+pythonpath = ["."]

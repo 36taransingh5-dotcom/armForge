@@ -143,7 +143,7 @@ def test_single_core_cpu_yields_exactly_one_candidate():
 
 
 def test_plan_prunes_kleidiai_on_a_cpu_without_i8mm_or_sme(tmp_path, graviton_host):
-    from tests.conftest import build_gguf
+    from tests.helpers import build_gguf
 
     model = build_gguf(
         tmp_path / "m.gguf",
@@ -160,7 +160,7 @@ def test_plan_prunes_kleidiai_on_a_cpu_without_i8mm_or_sme(tmp_path, graviton_ho
 
 
 def test_plan_keeps_kleidiai_when_the_cpu_can_reach_it(tmp_path, apple_host):
-    from tests.conftest import build_gguf
+    from tests.helpers import build_gguf
 
     model = build_gguf(
         tmp_path / "m.gguf",
@@ -172,7 +172,7 @@ def test_plan_keeps_kleidiai_when_the_cpu_can_reach_it(tmp_path, apple_host):
 
 
 def test_plan_prunes_a_model_that_would_page(tmp_path, apple_host):
-    from tests.conftest import build_gguf
+    from tests.helpers import build_gguf
 
     model = build_gguf(
         tmp_path / "big.gguf",
@@ -197,7 +197,7 @@ def test_unreadable_model_is_pruned_not_crashed(tmp_path, apple_host):
 
 
 def test_every_candidate_explains_the_quantisation_interaction(tmp_path, apple_host):
-    from tests.conftest import build_gguf
+    from tests.helpers import build_gguf
 
     model = build_gguf(
         tmp_path / "m.gguf",

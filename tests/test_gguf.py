@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from armforge.analyzer import GGUFError, read_gguf
-from tests.conftest import build_gguf
+from tests.helpers import build_gguf
 
 
 def test_reads_architecture_quantization_and_params(tmp_path):

@@ -28,8 +28,7 @@ def _host_table(host: dict[str, Any]) -> list[str]:
     cpu = host["cpu"]
     topology = "heterogeneous" if cpu["is_heterogeneous"] else "uniform"
     clusters = ", ".join(
-        f"{c['physical_cores']}× {c.get('core_name') or c['name']}"
-        for c in cpu["clusters"]
+        f"{c['physical_cores']}× {c.get('core_name') or c['name']}" for c in cpu["clusters"]
     )
     present = ", ".join(f"`{f}`" for f in cpu["features"]) or "none detected"
 
